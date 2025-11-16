@@ -14,6 +14,8 @@ library(sf)
 library(terra)
 library(tidyverse)
 library(terra)
+library(ggplot2)
+library(dplyr)
 ```
 
 
@@ -33,64 +35,160 @@ Further refine your approach (e.g., what data will you combine/transorm to a new
 Justify why this is needed now (e.g., visualization to test a new dimension of the question or better convey an old one)
 
 4. Hypotheses/questions:
-My hypotheses and questions are as follows, Hypothesis one, how to seasonal changes of urban environments compared to rural areas impact bee phrenology. Hypothesis two would be what is driving these changes. For hypothesis three, what causes these differences in phenology. 
+My hypotheses and questions are as follows, Hypothesis one, how do seasonal changes of urban environments compared to rural areas impact bee phrenology. Hypothesis two would be what is driving these changes. For hypothesis three, what causes these differences in phenology. 
+
 9.5.2 Dataset identification
 The data I will be using primarily is Oregon Bee Atlas (OBA) dataset, in conjunction with the National Land Cover Database (NLCD).  NLCD will allow me to look at urbanized areas and forest cover. This is useful because I will be able to compare these two and see how urbanization has impacted bee phenology. I like this dataset because I can also look at how forest cover has changed over times, whether that is from wildfires or human interference, and infer that way. 
 
 ```{r}
-library(terra)
+oba_clean <- read.csv("~/Downloads/BeeUrbanizationProject/OBA_2018-2024.csv")
 
-# Load the raster
-r <- rast("/Users/vgarfield03/Downloads/ds-environ-main/BeeUrbanizationProject/urban-phenology-project")
+glimpse(oba_clean)
 
-# Quick check
-r
+## cleaning Data, Getting rid of NA's 
+oba_clean <- oba_clean %>% filter(!is.na(decimalLatitude), !is.na(decimalLongitude))
 
-# Check CRS
-crs_info <- crs(r, describe = TRUE)
-print(crs_info)
 
-# Check just the WKT/Proj4 string
-crs_string <- crs(r)
-print(crs_string)
+## Convert to sf points (lat/long fields)
+oba_sf <- st_as_sf(oba_clean, coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
 
-crs_info <- st_crs(crs_string)
-print(crs_info)
+## NCLD 2020 RIF RASTER 
+nlcd_2020_landcover <- rast("~/Downloads/BeeUrbanizationProject/Annual_NLCD_LndCov_2020_CU_C1V1.tif")
 
-##crs(r) <- "EPSG:26910"
+nlcd_2020_impervious <- rast("~/Downloads/BeeUrbanizationProject/Annual_NLCD_FctImp_2020_CU_C1V1.tif")
+```
 
-## length is in meters 
+
+```{r}
+# reprojecting OBA points, to align with NLCD 
+oba_sf <- st_transform(oba_sf, crs(nlcd_2020_landcover))
+
 ```
 
 ```{r}
-library(sf)
-library(terra)
-library(tidyverse)
-
-## Clean OBA data loading...
-oba <- read_csv("/Users/vgarfield03/Downloads/ds-environ-main/data/OBA_2018-2023.csv")
-
-## in st_as_sf.data.frame(oba, coords = c("Dec. Long.", "Dec. Lat."),  :  missing values in coordinates not allowed - was an error, so I am going back to removed rows with missing coordinates. 
-oba_clean <- oba %>% 
-  filter(!is.na(`Dec. Lat.`) & (`Dec. Long.`))
-
-## converting to sf for GIS, updated oba into oba_clean
-oba_sf <- st_as_sf(oba_clean, coords = c("Dec. Long.", "Dec. Lat."), crs = 4326)
-## crs is the world reference systems
-
-#Loading NLCD rasters 
-nlcd_lc <- rast("Annual_NLCD_LndCov_2020_CU_C1V1.tif")
-nlcd <- rast("Annual_NLCD_FctImp_2020_CU_C1V1.tif")
-
-
-## removing NA values 
-oba_clean <- oba %>% drop_na(`Dec. Long.`, `Dec. Long.`)
-
-
-#Getting values into my OBA data 
-oba$landcover <- extract(nlcd_lc, vect(oba_sf))[,2]
-oba$impervious <- extract(nlcd_imp, vect(oba_sf))[,2]
-
+## Extract NLCD values at each bee point 
+oba_clean$nlcd_2020_landcover <- terra::extract(
+  nlcd_2020_landcover,
+  vect(oba_sf)
+)[,2]
 
 ```
+
+```{r}
+## Extracting Impervious surface value 
+oba_clean$nlcd_2020_impervious <- terra::extract(
+  nlcd_2020_impervious,
+  vect(oba_sf)
+)[,2]
+
+```
+
+```{r}
+##quick confirmation of nlcd land cover, making sure its what I am looking for 
+plot(nlcd_2020_landcover, main = "NLCD 2020 Land Cover")
+points(oba_sf, pch = 20, col = "red")
+
+```
+```{r}
+## Define and add rural/urban classification, impervous
+oba_clean$imperv_class <- dplyr::case_when(
+  oba_clean$nlcd_2020_impervious >= 20 ~ "Urban",
+  oba_clean$nlcd_2020_impervious > 0 & oba_clean$nlcd_2020_impervious < 20 ~ "Suburban",
+  oba_clean$nlcd_2020_impervious == 0 ~ "Rural",
+   TRUE ~ NA_character_
+)
+
+##Error in `mutate()`: In argument: `doy_mid = (startDayofYear + endDayofYear)/2`.Caused by error in `startDayofYear + endDayofYear`:! non-numeric argument to binary operator, going to empty srtings as NA
+
+oba_clean <- oba_clean %>%
+  mutate(
+    endDayofYear = ifelse(endDayofYear == "", NA, endDayofYear),
+    endDayofYear = as.numeric(endDayofYear)
+  )
+
+oba_clean <- oba_clean %>%
+  mutate(
+    endDayofYear = ifelse(endDayofYear == "", NA, endDayofYear),
+    endDayofYear = as.numeric(endDayofYear)
+  )
+
+
+##Phenology metrics 
+oba_clean <- oba_clean %>%
+  mutate(
+    doy_start = startDayofYear,
+    doy_end = endDayofYear,
+    doy_mid = (startDayofYear + endDayofYear) / 2,
+    flight_window = endDayofYear - startDayofYear
+  )
+```
+
+```{r}
+## create midpoint of my DOY 
+oba_clean <- oba_clean %>%
+  mutate(
+    doy_mid = (startDayofYear + endDayofYear) / 2
+  )
+
+```
+
+```{r}
+hist(oba_clean$flight_window,
+     main="Flight Window Length",
+     xlab="Days")
+
+```
+```{r}
+## Urban vs rural phenology comparison
+library(ggplot2)
+
+ggplot(oba_clean, aes(x = doy_mid)) +
+  geom_histogram() +
+  labs(
+    title = "Bee Phenology by Urban/Rural Locations",
+    x = "Day of Year (Midpoint)",
+    y = "Amount of bees",
+  )
+```
+
+Now that we have collected DOY bee phenology and window of flight time, I want to compare these and see how be phenology compares to the window of flight time in urban and rural areas.
+
+```{r}
+# filter and clean oba_clean, so it can be plotted as a ggplot
+oba_clean_plot <- oba_clean %>%
+  filter(!is.na(doy_mid), !is.na(flight_window), !is.na(imperv_class)) %>%
+  mutate(imperv_class = factor(imperv_class, levels = c("Rural", "Urban")))
+
+## ggplot 
+
+```
+
+Workflow Description: 
+Data Cleaning 
+1. removing missing spatial data
+- found that latitude and longitude had some missing coordniates 
+2. filtered for non-bee species. 
+- removed any non scientific/species names. Using scientific name. 
+3. missing phenology data. 
+- conveerted empty strings in "startofDay" and "endDayofYear" to "NA", converted columns to numeric, this was causing me issues when I first started trying to analyze my data.
+4. removing multiple of the same records, to prevent bias. 
+
+Data Transformation:
+1. looked at how to calculate phenology metrics in R studio(will attach reference into this workflow detail) to analyze middle of the year time period, this helped me look at flight window times as well. I did this to analyze what the flight period of bees, to see in the future when they are arriving in certain areas (urban and rural). 
+2. Environmental factors. wanted to use terra::extract() to NCLD to look at land cover values and surface estimates on bee observation 
+
+Aggregation:
+1. Remove incomplete spatial data 
+- organize data by country, year(2020) and urbanization to observe temporal triends 
+
+Vizualization: 
+1. Histograms 
+- Want to show distribution of middle of the year and flight windows across Urban and rural areas. 
+2. Spatial plots: 
+- map bee distribution using NLCD raster to show urban/rural gradients
+
+Functions: 
+1. function to compute doy_mid and flight_window for data.
+- using histograms to observe time periods of bee flights/travel to an area 
+- use ggplot to identify trends of how bees are distributed/travel according to urban and rural areas
 
